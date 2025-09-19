@@ -531,7 +531,7 @@ impl NetworkConfig {
         match NetworkingMethod::try_from(self.networking_method.unwrap_or_default())
             .unwrap_or_default()
         {
-            // 如果是远程配置服务器模式，则通过http请求，将返回数据作为peer列表
+            // 如果是远程配置服务器模式，则通过 http 请求，将返回数据作为peer列表
             NetworkingMethod::RemoteServer => {
                 //通过remote_server_url：(post:https://www.test.com/demo.json)发起请求，获取peer列表
                 let remote_server_url = self.remote_server_url.clone().unwrap_or_default();
