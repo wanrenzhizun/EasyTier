@@ -531,6 +531,45 @@ impl NetworkConfig {
         match NetworkingMethod::try_from(self.networking_method.unwrap_or_default())
             .unwrap_or_default()
         {
+            // 如果是远程配置服务器模式，则通过http请求，将返回数据作为peer列表
+            NetworkingMethod::RemoteServer => {
+                //通过remote_server_url：(post:https://www.test.com/demo.json)发起请求，获取peer列表
+                let remote_server_url = self.remote_server_url.clone().unwrap_or_default();
+                // 通过第一个:号进行截断，前面是请求方法，后面是url
+                let (method, url) = remote_server_url.split_once(":").unwrap();
+
+                // 克隆method和url字符串以确保它们有足够长的生命周期
+                let method_str = method.to_string();
+                let url_str = url.to_string();
+                let remote_server_url_clone = remote_server_url.clone();
+
+                // 在同步函数中使用异步运行时执行异步请求
+                let resp_text = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        let client = reqwest::Client::new();
+                        let resp = client.request(method_str.parse().unwrap(), &url_str)
+                            .send()
+                            .await
+                            .with_context(|| format!("failed to request remote server: {}", remote_server_url_clone));
+                        match resp {
+                            Ok(response) => {
+                                let text = response.text().await
+                                    .with_context(|| format!("failed to read response from remote server: {}", remote_server_url_clone));
+                                text
+                            }
+                            Err(e) => Err(e)
+                        }
+                    })
+                }).join().unwrap()?;
+                //打印返回结果
+                println!("{}", resp_text);
+                // 解析JSON
+                let peers: Vec<PeerConfig> = serde_json::from_str(&resp_text)
+                    .with_context(|| format!("failed to parse peer list from remote server: {}", remote_server_url))?;
+
+                cfg.set_peers(peers);
+            }
             NetworkingMethod::PublicServer => {
                 let public_server_url = self.public_server_url.clone().unwrap_or_default();
                 cfg.set_peers(vec![PeerConfig {
