@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::Context;
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use tokio::{
     sync::{
         broadcast::{error::RecvError, Receiver},
@@ -60,6 +60,8 @@ struct ConnectorManagerData {
     removed_conn_urls: Arc<DashSet<String>>,
     net_ns: NetNS,
     global_ctx: ArcGlobalCtx,
+    // 用于存储远程服务器URL的映射，key为remote_server_url，value为原始dead_url
+    remote_server_urls: Arc<DashMap<String, String>>,
 }
 
 pub struct ManualConnectorManager {
@@ -84,6 +86,7 @@ impl ManualConnectorManager {
                 removed_conn_urls: Arc::new(DashSet::new()),
                 net_ns: global_ctx.net_ns.clone(),
                 global_ctx,
+                remote_server_urls: Arc::new(DashMap::new()),
             }),
             tasks,
         };
@@ -108,6 +111,12 @@ impl ManualConnectorManager {
 
     pub async fn add_connector_by_url(&self, url: &str) -> Result<(), Error> {
         self.data.connectors.insert(url.to_owned());
+        Ok(())
+    }
+
+    // 添加一个新的方法，用于注册远程服务器URL
+    pub async fn add_remote_server_url(&self, remote_server_url: String, dead_url: String) -> Result<(), Error> {
+        self.data.remote_server_urls.insert(remote_server_url, dead_url);
         Ok(())
     }
 
@@ -307,6 +316,54 @@ impl ManualConnectorManager {
         ret
     }
 
+    // 从远程服务器获取新的peers配置
+    async fn fetch_peers_from_remote_server(remote_server_url: &str) -> Result<Vec<String>, Error> {
+        // 解析URL，格式为 method:url
+        let parts: Vec<&str> = remote_server_url.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            return Err(Error::AnyhowError(anyhow::anyhow!(
+                "Invalid remote server url format: {}, expected format: method:url", 
+                remote_server_url
+            )));
+        }
+
+        let method = parts[0];
+        let url = parts[1];
+        
+        // 发起HTTP请求获取peers列表
+        let client = reqwest::Client::new();
+        let response = client
+            .request(method.parse().unwrap(), url)
+            .send()
+            .await
+            .map_err(|e| Error::AnyhowError(anyhow::anyhow!(
+                "Failed to request remote server {}: {}", 
+                remote_server_url, 
+                e
+            )))?;
+
+        let resp_text = response
+            .text()
+            .await
+            .map_err(|e| Error::AnyhowError(anyhow::anyhow!(
+                "Failed to read response from remote server {}: {}", 
+                remote_server_url, 
+                e
+            )))?;
+
+        // 解析JSON响应
+        let peers: Vec<crate::common::config::PeerConfig> = serde_json::from_str(&resp_text)
+            .map_err(|e| Error::AnyhowError(anyhow::anyhow!(
+                "Failed to parse peer list from remote server {}: {}", 
+                remote_server_url, 
+                e
+            )))?;
+
+        // 提取URL字符串
+        let peer_urls: Vec<String> = peers.into_iter().map(|p| p.uri.to_string()).collect();
+        Ok(peer_urls)
+    }
+
     async fn conn_reconnect_with_ip_version(
         data: Arc<ConnectorManagerData>,
         dead_url: String,
@@ -339,9 +396,38 @@ impl ManualConnectorManager {
     ) -> Result<ReconnResult, Error> {
         tracing::info!("reconnect: {}", dead_url);
 
+        // 检查是否是远程服务器URL，如果是则从远程服务器获取新的peers
+        let mut actual_dead_url = dead_url.clone();
+        if let Some(remote_server_url) = data.remote_server_urls.get(&dead_url) {
+            tracing::info!("Fetching new peers from remote server: {}", remote_server_url.value());
+            match Self::fetch_peers_from_remote_server(remote_server_url.value()).await {
+                Ok(peer_urls) => {
+                    tracing::info!("Successfully fetched {} peers from remote server", peer_urls.len());
+                    
+                    // 移除旧的连接器
+                    data.connectors.remove(&dead_url);
+                    
+                    // 添加新的peers
+                    for peer_url in peer_urls {
+                        data.connectors.insert(peer_url.clone());
+                        tracing::info!("Added new peer from remote server: {}", peer_url);
+                    }
+                    
+                    // 返回错误，触发重新连接循环
+                    return Err(Error::AnyhowError(anyhow::anyhow!(
+                        "Updated peers from remote server, reconnecting with new peers"
+                    )));
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to fetch peers from remote server {}: {:?}", remote_server_url.value(), e);
+                    // 继续使用原始URL尝试连接
+                }
+            }
+        }
+
         let mut ip_versions = vec![];
-        let u = url::Url::parse(&dead_url)
-            .with_context(|| format!("failed to parse connector url {:?}", dead_url))?;
+        let u = url::Url::parse(&actual_dead_url)
+            .with_context(|| format!("failed to parse connector url {:?}", actual_dead_url))?;
         if u.scheme() == "ring" || u.scheme() == "txt" || u.scheme() == "srv" {
             ip_versions.push(IpVersion::Both);
         } else {
@@ -349,7 +435,7 @@ impl ManualConnectorManager {
                 Ok(addrs) => addrs,
                 Err(e) => {
                     data.global_ctx.issue_event(GlobalCtxEvent::ConnectError(
-                        dead_url.clone(),
+                        actual_dead_url.clone(),
                         format!("{:?}", IpVersion::Both),
                         format!("{:?}", e),
                     ));
@@ -359,7 +445,7 @@ impl ManualConnectorManager {
                     )));
                 }
             };
-            tracing::info!(?addrs, ?dead_url, "get ip from url done");
+            tracing::info!(?addrs, ?actual_dead_url, "get ip from url done");
             let mut has_ipv4 = false;
             let mut has_ipv6 = false;
             for addr in addrs {
@@ -381,16 +467,16 @@ impl ManualConnectorManager {
             "cannot get ip from url"
         )));
         for ip_version in ip_versions {
-            let use_long_timeout = dead_url.starts_with("http")
-                || dead_url.starts_with("srv")
-                || dead_url.starts_with("txt");
+            let use_long_timeout = actual_dead_url.starts_with("http")
+                || actual_dead_url.starts_with("srv")
+                || actual_dead_url.starts_with("txt");
             let ret = timeout(
                 // allow http connector to wait longer
                 std::time::Duration::from_secs(if use_long_timeout { 20 } else { 2 }),
-                Self::conn_reconnect_with_ip_version(data.clone(), dead_url.clone(), ip_version),
+                Self::conn_reconnect_with_ip_version(data.clone(), actual_dead_url.clone(), ip_version),
             )
             .await;
-            tracing::info!("reconnect: {} done, ret: {:?}", dead_url, ret);
+            tracing::info!("reconnect: {} done, ret: {:?}", actual_dead_url, ret);
 
             match ret {
                 Ok(Ok(_)) => {
@@ -410,7 +496,7 @@ impl ManualConnectorManager {
 
             // 发送事件（只有在未 break 时才执行）
             data.global_ctx.issue_event(GlobalCtxEvent::ConnectError(
-                dead_url.clone(),
+                actual_dead_url.clone(),
                 format!("{:?}", ip_version),
                 format!("{:?}", reconn_ret),
             ));

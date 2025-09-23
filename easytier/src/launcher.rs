@@ -535,7 +535,10 @@ impl NetworkConfig {
             NetworkingMethod::RemoteServer => {
                 //通过remote_server_url：(post:https://www.test.com/demo.json)发起请求，获取peer列表
                 let remote_server_url = self.remote_server_url.clone().unwrap_or_default();
-                // 通过第一个:号进行截断，前面是请求方法，后面是url,注意remote_server_url可能为空
+                // 注册远程服务器URL，以便在连接失败时可以重新获取peers
+                cfg.set_remote_server_url(Some(remote_server_url.clone()));
+                
+                // 克隆method和url字符串以确保它们有足够长的生命周期
                 let (method, url) = remote_server_url.split_once(":").ok_or_else(|| {
                     anyhow::anyhow!("Invalid remote server url format: {}, expected format: method:url", remote_server_url)
                 })?;
