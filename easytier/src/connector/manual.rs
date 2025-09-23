@@ -252,7 +252,7 @@ impl ManualConnectorManager {
                         
                         // 检查这个dead_url是否是远程服务器URL，如果是则跳过重连
                         let is_remote_server_url = data.remote_server_urls.iter().any(|entry| {
-                            entry.value() == dead_url
+                            *entry.value() == dead_url
                         });
                         
                         if is_remote_server_url {
@@ -421,7 +421,7 @@ impl ManualConnectorManager {
         for url in all_urls.iter() {
             // 不要将远程服务器URL标记为dead
             let is_remote_server_url = data.remote_server_urls.iter().any(|entry| {
-                entry.value() == url
+                *entry.value() == *url
             });
             
             if is_remote_server_url {
