@@ -52,6 +52,22 @@ struct ReconnResult {
     conn_id: PeerConnId,
 }
 
+impl ReconnResult {
+    // 检查结果是否表示远程服务器更新（而不是实际的重连结果）
+    fn is_remote_server_update(&self) -> bool {
+        self.peer_id == 0 && self.conn_id == uuid::Uuid::nil()
+    }
+    
+    // 创建一个表示远程服务器更新的结果
+    fn remote_server_update(dead_url: String) -> Self {
+        Self {
+            dead_url,
+            peer_id: 0,
+            conn_id: uuid::Uuid::nil(),
+        }
+    }
+}
+
 struct ConnectorManagerData {
     connectors: ConnectorMap,
     reconnecting: DashSet<String>,
@@ -268,17 +284,52 @@ impl ManualConnectorManager {
 
                         tasks.lock().unwrap().spawn(async move {
                             let reconn_ret = Self::conn_reconnect(data_clone.clone(), dead_url.clone() ).await;
+                            let is_remote_update = if let Ok(ref result) = reconn_ret {
+                                result.is_remote_server_update()
+                            } else {
+                                false
+                            };
+                            let is_ok = reconn_ret.is_ok();
                             let _ = sender.send(reconn_ret).await;
 
-                            data_clone.reconnecting.remove(&dead_url);
-                            data_clone.connectors.insert(dead_url.clone());
+                            if is_remote_update {
+                                // 远程服务器更新，不需要重新插入URL
+                                data_clone.reconnecting.remove(&dead_url);
+                                tracing::info!("Remote server URL updated, not re-adding to connectors: {}", dead_url);
+                            } else {
+                                // 普通重连或重连失败，需要清理状态
+                                data_clone.reconnecting.remove(&dead_url);
+                                if is_ok {
+                                    // 重连成功，不需要重新插入URL
+                                    tracing::info!("Peer reconnected successfully, not re-adding to connectors: {}", dead_url);
+                                } else {
+                                    // 重连失败，重新插入URL以便稍后重试
+                                    data_clone.connectors.insert(dead_url.clone());
+                                    tracing::info!("Peer reconnection failed, re-adding to connectors for retry: {}", dead_url);
+                                }
+                            }
                         });
                     }
                     tracing::info!("reconn_interval tick, done");
                 }
 
                 ret = reconn_result_recv.recv() => {
-                    tracing::warn!("reconn_tasks done, reconn result: {:?}", ret);
+                    if let Some(result) = ret {
+                        match result {
+                            Ok(reconn_result) => {
+                                let is_remote_update = reconn_result.is_remote_server_update();
+                                // 检查是否是特殊的远程服务器更新结果
+                                if is_remote_update {
+                                    tracing::info!("reconn_tasks done, remote server URL updated successfully");
+                                } else {
+                                    tracing::info!("reconn_tasks done, reconn result: Ok({:?})", reconn_result);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("reconn_tasks done, reconn result: Err({:?})", e);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -579,10 +630,10 @@ impl ManualConnectorManager {
                     // 更新时间戳
                     data.last_remote_update.insert(remote_server_url.key().clone(), Instant::now());
                     
-                    // 返回错误，触发重新连接循环
-                    return Err(Error::AnyhowError(anyhow::anyhow!(
-                        "Updated peers from remote server, reconnecting with new peers"
-                    )));
+                    // 对于远程服务器URL更新，我们返回Ok表示处理成功
+                    // 这样可以避免在日志中出现不必要的错误信息
+                    tracing::info!("Remote server peers updated successfully");
+                    return Ok(ReconnResult::remote_server_update(dead_url));
                 }
                 Err(e) => {
                     tracing::warn!("Failed to fetch peers from remote server {}: {:?}", remote_server_url.value(), e);
