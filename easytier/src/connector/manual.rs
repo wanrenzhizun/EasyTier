@@ -243,6 +243,13 @@ impl ManualConnectorManager {
                         continue;
                     }
                     for dead_url in dead_urls {
+                        // 再次检查这个dead_url是否仍然存在于connectors中
+                        // 如果是远程服务器更新导致的dead_url，可能已经不存在了
+                        if !data.connectors.contains(&dead_url) {
+                            tracing::info!("Skipping reconnect for removed peer: {}", dead_url);
+                            continue;
+                        }
+                        
                         let data_clone = data.clone();
                         let sender = reconn_result_send.clone();
                         data.connectors.remove(&dead_url).unwrap();
@@ -302,10 +309,10 @@ impl ManualConnectorManager {
                     // 检查是否有变化
                     let current_peers: BTreeSet<String> = data.connectors.iter()
                         .map(|x| x.key().clone())
-                        .filter(|url| !url.starts_with(&dead_url)) // 排除其他连接器
+                        .filter(|url| url.starts_with(&dead_url)) // 只检查与当前dead_url相关的peers
                         .collect();
                     
-                    let new_peers: BTreeSet<String> = new_peer_urls.into_iter().collect();
+                    let new_peers: BTreeSet<String> = new_peer_urls.iter().cloned().collect();
                     
                     if current_peers != new_peers {
                         tracing::info!("Remote server peers configuration changed, updating...");
@@ -318,6 +325,9 @@ impl ManualConnectorManager {
                         
                         for url in to_remove {
                             data.connectors.remove(&url);
+                            // 同时清理相关的alive_conn_urls和reconnecting状态
+                            data.alive_conn_urls.remove(&url);
+                            data.reconnecting.remove(&url);
                         }
                         
                         // 添加新的peers
@@ -326,7 +336,9 @@ impl ManualConnectorManager {
                             tracing::info!("Added new peer from remote server: {}", peer_url);
                         }
                         
-                        tracing::info!("Updated peers from remote server: {:?}", new_peers);
+                        tracing::info!("Updated peers from remote server. Old: {:?}, New: {:?}", current_peers, new_peers);
+                    } else {
+                        tracing::info!("No changes in remote server peers configuration");
                     }
                 }
                 Err(e) => {
@@ -523,6 +535,9 @@ impl ManualConnectorManager {
                     
                     // 移除旧的连接器
                     data.connectors.remove(&dead_url);
+                    // 同时清理相关的alive_conn_urls和reconnecting状态
+                    data.alive_conn_urls.remove(&dead_url);
+                    data.reconnecting.remove(&dead_url);
                     
                     // 添加新的peers
                     for peer_url in peer_urls {
