@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeSet,
     sync::{Arc, Weak},
+    time::{Duration, Instant},
 };
 
 use anyhow::Context;
@@ -62,6 +63,8 @@ struct ConnectorManagerData {
     global_ctx: ArcGlobalCtx,
     // 用于存储远程服务器URL的映射，key为remote_server_url，value为原始dead_url
     remote_server_urls: Arc<DashMap<String, String>>,
+    // 记录上次更新远程服务器配置的时间
+    last_remote_update: Arc<DashMap<String, Instant>>,
 }
 
 pub struct ManualConnectorManager {
@@ -87,6 +90,7 @@ impl ManualConnectorManager {
                 net_ns: global_ctx.net_ns.clone(),
                 global_ctx,
                 remote_server_urls: Arc::new(DashMap::new()),
+                last_remote_update: Arc::new(DashMap::new()),
             }),
             tasks,
         };
@@ -116,7 +120,9 @@ impl ManualConnectorManager {
 
     // 添加一个新的方法，用于注册远程服务器URL
     pub async fn add_remote_server_url(&self, remote_server_url: String, dead_url: String) -> Result<(), Error> {
-        self.data.remote_server_urls.insert(remote_server_url, dead_url);
+        self.data.remote_server_urls.insert(remote_server_url.clone(), dead_url);
+        // 初始化更新时间
+        self.data.last_remote_update.insert(remote_server_url, Instant::now());
         Ok(())
     }
 
@@ -229,6 +235,9 @@ impl ManualConnectorManager {
         loop {
             tokio::select! {
                 _ = reconn_interval.tick() => {
+                    // 检查是否有远程服务器需要更新配置
+                    Self::check_and_update_remote_servers(&data).await;
+                    
                     let dead_urls = Self::collect_dead_conns(data.clone()).await;
                     if dead_urls.is_empty() {
                         continue;
@@ -253,6 +262,75 @@ impl ManualConnectorManager {
 
                 ret = reconn_result_recv.recv() => {
                     tracing::warn!("reconn_tasks done, reconn result: {:?}", ret);
+                }
+            }
+        }
+    }
+
+    // 检查并更新远程服务器配置
+    async fn check_and_update_remote_servers(data: &Arc<ConnectorManagerData>) {
+        let mut to_update = Vec::new();
+        
+        // 检查所有远程服务器URL是否需要更新（例如每5分钟检查一次）
+        for entry in data.remote_server_urls.iter() {
+            let remote_server_url = entry.key();
+            let dead_url = entry.value();
+            
+            // 检查是否需要更新（例如超过5分钟未更新）
+            let should_update = if let Some(last_update) = data.last_remote_update.get(remote_server_url) {
+                last_update.elapsed() > Duration::from_secs(300) // 5分钟
+            } else {
+                true
+            };
+            
+            if should_update {
+                to_update.push((remote_server_url.clone(), dead_url.clone()));
+            }
+        }
+        
+        // 更新需要更新的远程服务器配置
+        for (remote_server_url, dead_url) in to_update {
+            tracing::info!("Checking for updates from remote server: {}", remote_server_url);
+            
+            match Self::fetch_peers_from_remote_server(&remote_server_url).await {
+                Ok(new_peer_urls) => {
+                    tracing::info!("Successfully fetched {} peers from remote server", new_peer_urls.len());
+                    
+                    // 更新时间戳
+                    data.last_remote_update.insert(remote_server_url.clone(), Instant::now());
+                    
+                    // 检查是否有变化
+                    let current_peers: BTreeSet<String> = data.connectors.iter()
+                        .map(|x| x.key().clone())
+                        .filter(|url| !url.starts_with(&dead_url)) // 排除其他连接器
+                        .collect();
+                    
+                    let new_peers: BTreeSet<String> = new_peer_urls.into_iter().collect();
+                    
+                    if current_peers != new_peers {
+                        tracing::info!("Remote server peers configuration changed, updating...");
+                        
+                        // 移除旧的peers（与dead_url相关的）
+                        let to_remove: Vec<String> = data.connectors.iter()
+                            .map(|x| x.key().clone())
+                            .filter(|url| url.starts_with(&dead_url))
+                            .collect();
+                        
+                        for url in to_remove {
+                            data.connectors.remove(&url);
+                        }
+                        
+                        // 添加新的peers
+                        for peer_url in &new_peers {
+                            data.connectors.insert(peer_url.clone());
+                            tracing::info!("Added new peer from remote server: {}", peer_url);
+                        }
+                        
+                        tracing::info!("Updated peers from remote server: {:?}", new_peers);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to fetch peers from remote server {}: {:?}", remote_server_url, e);
                 }
             }
         }
@@ -451,6 +529,9 @@ impl ManualConnectorManager {
                         data.connectors.insert(peer_url.clone());
                         tracing::info!("Added new peer from remote server: {}", peer_url);
                     }
+                    
+                    // 更新时间戳
+                    data.last_remote_update.insert(remote_server_url.key().clone(), Instant::now());
                     
                     // 返回错误，触发重新连接循环
                     return Err(Error::AnyhowError(anyhow::anyhow!(
