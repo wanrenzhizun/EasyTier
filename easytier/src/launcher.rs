@@ -571,7 +571,7 @@ impl NetworkConfig {
                 println!("{}", resp_text);
                 // 解析JSON
                 let peers: Vec<PeerConfig> = serde_json::from_str(&resp_text)
-                    .with_context(|| format!("failed to parse peer list from remote server: {}", remote_server_url))?;
+                    .with_context(|| format!("failed to parse peer list from remote server response: {}", resp_text))?;
 
                 cfg.set_peers(peers);
             }

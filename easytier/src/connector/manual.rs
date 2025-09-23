@@ -397,7 +397,7 @@ impl ManualConnectorManager {
         tracing::info!("reconnect: {}", dead_url);
 
         // 检查是否是远程服务器URL，如果是则从远程服务器获取新的peers
-        let mut actual_dead_url = dead_url.clone();
+        let actual_dead_url = dead_url.clone();
         if let Some(remote_server_url) = data.remote_server_urls.get(&dead_url) {
             tracing::info!("Fetching new peers from remote server: {}", remote_server_url.value());
             match Self::fetch_peers_from_remote_server(remote_server_url.value()).await {
