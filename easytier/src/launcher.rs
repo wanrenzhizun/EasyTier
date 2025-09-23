@@ -544,34 +544,67 @@ impl NetworkConfig {
                 })?;
 
                 // 克隆method和url字符串以确保它们有足够长的生命周期
-                let method_str = method.to_string();
+                let method_str = method.to_string().to_uppercase(); // 转换为大写以确保方法名正确
                 let url_str = url.to_string();
                 let remote_server_url_clone = remote_server_url.clone();
 
                 // 在同步函数中使用异步运行时执行异步请求
-                let resp_text = std::thread::spawn(move || {
+                let resp_result = std::thread::spawn(move || {
                     let rt = tokio::runtime::Runtime::new().unwrap();
                     rt.block_on(async {
                         let client = reqwest::Client::new();
                         let resp = client.request(method_str.parse().unwrap(), &url_str)
                             .send()
-                            .await
-                            .with_context(|| format!("failed to request remote server: {}", remote_server_url_clone));
+                            .await;
                         match resp {
                             Ok(response) => {
-                                let text = response.text().await
-                                    .with_context(|| format!("failed to read response from remote server: {}", remote_server_url_clone));
-                                text
+                                let status = response.status();
+                                let text_result = response.text().await;
+                                match text_result {
+                                    Ok(text) => {
+                                        if status.is_success() {
+                                            Ok(text)
+                                        } else {
+                                            Err(anyhow::anyhow!("Remote server returned non-success status {}: {}", status, text))
+                                        }
+                                    }
+                                    Err(e) => Err(anyhow::anyhow!("Failed to read response from remote server: {}", e))
+                                }
                             }
-                            Err(e) => Err(e)
+                            Err(e) => Err(anyhow::anyhow!("Failed to request remote server: {}", e))
                         }
                     })
-                }).join().unwrap()?;
+                }).join().unwrap();
+
+                let resp_text = resp_result.with_context(|| format!("failed to request remote server: {}", remote_server_url_clone))?;
                 //打印返回结果
                 println!("{}", resp_text);
-                // 解析JSON
-                let peers: Vec<PeerConfig> = serde_json::from_str(&resp_text)
-                    .with_context(|| format!("failed to parse peer list from remote server response: {}", resp_text))?;
+                
+                // 尝试解析JSON响应
+                let peers = 
+                    // 首先尝试解析为PeerConfig数组
+                    if let Ok(peers) = serde_json::from_str::<Vec<PeerConfig>>(&resp_text) {
+                        peers
+                    }
+                    // 如果失败，尝试解析为字符串数组（URL列表）
+                    else if let Ok(urls) = serde_json::from_str::<Vec<String>>(&resp_text) {
+                        // 验证每个URL是否有效
+                        let mut peers = Vec::new();
+                        for url_str in urls {
+                            let uri = url_str.parse().with_context(|| format!("Invalid URL in peer list: {}", url_str))?;
+                            peers.push(PeerConfig { uri });
+                        }
+                        peers
+                    }
+                    // 如果还失败，尝试解析为单个字符串（单个URL）
+                    else if let Ok(url_str) = serde_json::from_str::<String>(&resp_text) {
+                        let uri = url_str.parse().with_context(|| format!("Invalid URL: {}", url_str))?;
+                        vec![PeerConfig { uri }]
+                    }
+                    // 所有解析都失败了
+                    else {
+                        return Err(anyhow::anyhow!("Failed to parse peer list from remote server response: {}", resp_text));
+                    };
 
                 cfg.set_peers(peers);
             }
