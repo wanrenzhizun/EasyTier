@@ -327,13 +327,19 @@ impl ManualConnectorManager {
             )));
         }
 
-        let method = parts[0];
+        let method = parts[0].to_uppercase(); // 转换为大写，确保方法名正确
         let url = parts[1];
         
         // 发起HTTP请求获取peers列表
         let client = reqwest::Client::new();
-        let response = client
-            .request(method.parse().unwrap(), url)
+        let request_builder = client.request(
+            method.parse().map_err(|_| Error::AnyhowError(anyhow::anyhow!(
+                "Invalid HTTP method: {}", method
+            )))?, 
+            url
+        );
+        
+        let response = request_builder
             .send()
             .await
             .map_err(|e| Error::AnyhowError(anyhow::anyhow!(
@@ -342,6 +348,7 @@ impl ManualConnectorManager {
                 e
             )))?;
 
+        let status = response.status();
         let resp_text = response
             .text()
             .await
@@ -351,17 +358,49 @@ impl ManualConnectorManager {
                 e
             )))?;
 
-        // 解析JSON响应
-        let peers: Vec<crate::common::config::PeerConfig> = serde_json::from_str(&resp_text)
-            .map_err(|e| Error::AnyhowError(anyhow::anyhow!(
-                "Failed to parse peer list from remote server {}: {}", 
-                remote_server_url, 
-                e
-            )))?;
+        // 检查HTTP状态码
+        if !status.is_success() {
+            return Err(Error::AnyhowError(anyhow::anyhow!(
+                "Remote server returned non-success status {}: {}",
+                status,
+                resp_text
+            )));
+        }
 
-        // 提取URL字符串
-        let peer_urls: Vec<String> = peers.into_iter().map(|p| p.uri.to_string()).collect();
-        Ok(peer_urls)
+        tracing::debug!("Remote server response: {}", resp_text);
+
+        // 尝试解析JSON响应
+        // 首先尝试解析为PeerConfig数组
+        if let Ok(peers) = serde_json::from_str::<Vec<crate::common::config::PeerConfig>>(&resp_text) {
+            let peer_urls: Vec<String> = peers.into_iter().map(|p| p.uri.to_string()).collect();
+            return Ok(peer_urls);
+        }
+
+        // 如果失败，尝试解析为字符串数组（URL列表）
+        if let Ok(urls) = serde_json::from_str::<Vec<String>>(&resp_text) {
+            // 验证每个URL是否有效
+            for url_str in &urls {
+                url::Url::parse(url_str).map_err(|e| Error::AnyhowError(anyhow::anyhow!(
+                    "Invalid URL in peer list: {}: {}", url_str, e
+                )))?;
+            }
+            return Ok(urls);
+        }
+
+        // 如果还失败，尝试解析为单个字符串（单个URL）
+        if let Ok(url_str) = serde_json::from_str::<String>(&resp_text) {
+            url::Url::parse(&url_str).map_err(|e| Error::AnyhowError(anyhow::anyhow!(
+                "Invalid URL: {}: {}", url_str, e
+            )))?;
+            return Ok(vec![url_str]);
+        }
+
+        // 所有解析都失败了
+        Err(Error::AnyhowError(anyhow::anyhow!(
+            "Failed to parse peer list from remote server {}. Response: {}", 
+            remote_server_url, 
+            resp_text
+        )))
     }
 
     async fn conn_reconnect_with_ip_version(

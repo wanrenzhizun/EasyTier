@@ -487,6 +487,16 @@ impl TomlConfigLoader {
 }
 
 impl ConfigLoader for TomlConfigLoader {
+    // 添加获取远程服务器URL的方法
+    fn get_remote_server_url(&self) -> Option<String> {
+        self.config.lock().unwrap().remote_server_url.clone()
+    }
+
+    // 添加设置远程服务器URL的方法
+    fn set_remote_server_url(&self, url: Option<String>) {
+        self.config.lock().unwrap().remote_server_url = url;
+    }
+    
     fn get_inst_name(&self) -> String {
         self.config
             .lock()
@@ -670,16 +680,6 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_peers(&self, peers: Vec<PeerConfig>) {
         self.config.lock().unwrap().peer = Some(peers);
-    }
-
-    // 添加获取远程服务器URL的方法
-    fn get_remote_server_url(&self) -> Option<String> {
-        self.config.lock().unwrap().remote_server_url.clone()
-    }
-
-    // 添加设置远程服务器URL的方法
-    fn set_remote_server_url(&self, url: Option<String>) {
-        self.config.lock().unwrap().remote_server_url = url;
     }
 
     fn get_listeners(&self) -> Option<Vec<url::Url>> {
