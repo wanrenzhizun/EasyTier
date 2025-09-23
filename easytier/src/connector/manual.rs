@@ -250,9 +250,19 @@ impl ManualConnectorManager {
                             continue;
                         }
                         
+                        // 检查这个dead_url是否是远程服务器URL，如果是则跳过重连
+                        let is_remote_server_url = data.remote_server_urls.iter().any(|entry| {
+                            entry.value() == dead_url
+                        });
+                        
+                        if is_remote_server_url {
+                            tracing::info!("Skipping reconnect for remote server URL: {}", dead_url);
+                            continue;
+                        }
+                        
                         let data_clone = data.clone();
                         let sender = reconn_result_send.clone();
-                        data.connectors.remove(&dead_url).unwrap();
+                        data.connectors.remove(&dead_url);
                         let insert_succ = data.reconnecting.insert(dead_url.clone());
                         assert!(insert_succ);
 
@@ -260,7 +270,7 @@ impl ManualConnectorManager {
                             let reconn_ret = Self::conn_reconnect(data_clone.clone(), dead_url.clone() ).await;
                             let _ = sender.send(reconn_ret).await;
 
-                            data_clone.reconnecting.remove(&dead_url).unwrap();
+                            data_clone.reconnecting.remove(&dead_url);
                             data_clone.connectors.insert(dead_url.clone());
                         });
                     }
@@ -330,13 +340,23 @@ impl ManualConnectorManager {
                             data.reconnecting.remove(&url);
                         }
                         
+                        // 清理dead_url本身的状态（这可能是一个标记URL，不是实际的peer）
+                        data.alive_conn_urls.remove(&dead_url);
+                        data.reconnecting.remove(&dead_url);
+                        
                         // 添加新的peers
                         for peer_url in &new_peers {
                             data.connectors.insert(peer_url.clone());
+                            // 确保新添加的peers没有在alive_conn_urls或reconnecting中被标记为dead
+                            data.alive_conn_urls.remove(peer_url);
+                            data.reconnecting.remove(peer_url);
                             tracing::info!("Added new peer from remote server: {}", peer_url);
                         }
                         
                         tracing::info!("Updated peers from remote server. Old: {:?}, New: {:?}", current_peers, new_peers);
+                        
+                        // 强制触发一次重连检查，确保新配置生效
+                        data.global_ctx.issue_event(GlobalCtxEvent::Connecting(url::Url::parse(&dead_url).unwrap_or_else(|_| "invalid://url".parse().unwrap())));
                     } else {
                         tracing::info!("No changes in remote server peers configuration");
                     }
@@ -399,6 +419,15 @@ impl ManualConnectorManager {
         let all_urls: BTreeSet<String> = data.connectors.iter().map(|x| x.key().clone()).collect();
         let mut ret = BTreeSet::new();
         for url in all_urls.iter() {
+            // 不要将远程服务器URL标记为dead
+            let is_remote_server_url = data.remote_server_urls.iter().any(|entry| {
+                entry.value() == url
+            });
+            
+            if is_remote_server_url {
+                continue;
+            }
+            
             if !data.alive_conn_urls.contains(url) {
                 ret.insert(url.clone());
             }
@@ -526,7 +555,6 @@ impl ManualConnectorManager {
         tracing::info!("reconnect: {}", dead_url);
 
         // 检查是否是远程服务器URL，如果是则从远程服务器获取新的peers
-        let actual_dead_url = dead_url.clone();
         if let Some(remote_server_url) = data.remote_server_urls.get(&dead_url) {
             tracing::info!("Fetching new peers from remote server: {}", remote_server_url.value());
             match Self::fetch_peers_from_remote_server(remote_server_url.value()).await {
@@ -542,6 +570,9 @@ impl ManualConnectorManager {
                     // 添加新的peers
                     for peer_url in peer_urls {
                         data.connectors.insert(peer_url.clone());
+                        // 确保新添加的peers没有在alive_conn_urls或reconnecting中被标记为dead
+                        data.alive_conn_urls.remove(&peer_url);
+                        data.reconnecting.remove(&peer_url);
                         tracing::info!("Added new peer from remote server: {}", peer_url);
                     }
                     
@@ -560,6 +591,7 @@ impl ManualConnectorManager {
             }
         }
 
+        let actual_dead_url = dead_url.clone();
         let mut ip_versions = vec![];
         let u = url::Url::parse(&actual_dead_url)
             .with_context(|| format!("failed to parse connector url {:?}", actual_dead_url))?;
