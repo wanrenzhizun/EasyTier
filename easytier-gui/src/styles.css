@@ -44,6 +44,11 @@
   background-color: #0000005d;
 }
 
+/* Fix for Debian-based Linux systems where content appears white */
+* {
+  color-scheme: light;
+}
+
 .p-password {
   width: 100%;
 }
