@@ -537,7 +537,7 @@ impl NetworkConfig {
                 let remote_server_url = self.remote_server_url.clone().unwrap_or_default();
                 // 注册远程服务器URL，以便在连接失败时可以重新获取peers
                 cfg.set_remote_server_url(Some(remote_server_url.clone()));
-                
+
                 // 克隆method和url字符串以确保它们有足够长的生命周期
                 let (method, url) = remote_server_url.split_once(":").ok_or_else(|| {
                     anyhow::anyhow!("Invalid remote server url format: {}, expected format: method:url", remote_server_url)
@@ -579,7 +579,7 @@ impl NetworkConfig {
                 let resp_text = resp_result.with_context(|| format!("failed to request remote server: {}", remote_server_url_clone))?;
                 //打印返回结果
                 println!("{}", resp_text);
-                
+
                 // 尝试解析JSON响应
                 let peers = Self::parse_peer_list(&resp_text)?;
 
@@ -850,7 +850,7 @@ impl NetworkConfig {
         if let Ok(peers) = serde_json::from_str::<Vec<PeerConfig>>(resp_text) {
             return Ok(peers);
         }
-        
+
         // 如果失败，尝试解析为字符串数组（URL列表）
         if let Ok(urls) = serde_json::from_str::<Vec<String>>(resp_text) {
             // 验证每个URL是否有效
@@ -861,13 +861,13 @@ impl NetworkConfig {
             }
             return Ok(peers);
         }
-        
+
         // 如果还失败，尝试解析为单个字符串（单个URL）
         if let Ok(url_str) = serde_json::from_str::<String>(resp_text) {
             let uri = url_str.parse().with_context(|| format!("Invalid URL: {}", url_str))?;
             return Ok(vec![PeerConfig { uri }]);
         }
-        
+
         // 所有解析都失败了
         Err(anyhow::anyhow!("Failed to parse peer list from remote server response: {}", resp_text))
     }

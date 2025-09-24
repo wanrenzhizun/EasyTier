@@ -423,7 +423,6 @@ struct Config {
     udp_whitelist: Option<Vec<String>>,
     stun_servers: Option<Vec<String>>,
     stun_servers_v6: Option<Vec<String>>,
-    
     // 添加远程服务器URL字段
     remote_server_url: Option<String>,
 }
@@ -496,7 +495,7 @@ impl ConfigLoader for TomlConfigLoader {
     fn set_remote_server_url(&self, url: Option<String>) {
         self.config.lock().unwrap().remote_server_url = url;
     }
-    
+
     fn get_inst_name(&self) -> String {
         self.config
             .lock()

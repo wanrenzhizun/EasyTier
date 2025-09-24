@@ -344,7 +344,7 @@ impl Instance {
 
             global_ctx,
         };
-        
+
         // 如果配置了远程服务器URL，注册到连接管理器中
         if let Some(remote_server_url) = instance.global_ctx.config.get_remote_server_url() {
             // 创建一个虚拟的dead_url作为键值
@@ -365,7 +365,7 @@ impl Instance {
                 }
             });
         }
-        
+
         instance
     }
 
