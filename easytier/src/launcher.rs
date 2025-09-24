@@ -581,30 +581,7 @@ impl NetworkConfig {
                 println!("{}", resp_text);
                 
                 // 尝试解析JSON响应
-                let peers = 
-                    // 首先尝试解析为PeerConfig数组
-                    if let Ok(peers) = serde_json::from_str::<Vec<PeerConfig>>(&resp_text) {
-                        peers
-                    }
-                    // 如果失败，尝试解析为字符串数组（URL列表）
-                    else if let Ok(urls) = serde_json::from_str::<Vec<String>>(&resp_text) {
-                        // 验证每个URL是否有效
-                        let mut peers = Vec::new();
-                        for url_str in urls {
-                            let uri = url_str.parse().with_context(|| format!("Invalid URL in peer list: {}", url_str))?;
-                            peers.push(PeerConfig { uri });
-                        }
-                        peers
-                    }
-                    // 如果还失败，尝试解析为单个字符串（单个URL）
-                    else if let Ok(url_str) = serde_json::from_str::<String>(&resp_text) {
-                        let uri = url_str.parse().with_context(|| format!("Invalid URL: {}", url_str))?;
-                        vec![PeerConfig { uri }]
-                    }
-                    // 所有解析都失败了
-                    else {
-                        return Err(anyhow::anyhow!("Failed to parse peer list from remote server response: {}", resp_text));
-                    };
+                let peers = Self::parse_peer_list(&resp_text)?;
 
                 cfg.set_peers(peers);
             }
@@ -866,6 +843,33 @@ impl NetworkConfig {
 
         cfg.set_flags(flags);
         Ok(cfg)
+    }
+
+    fn parse_peer_list(resp_text: &str) -> Result<Vec<PeerConfig>, anyhow::Error> {
+        // 首先尝试解析为PeerConfig数组
+        if let Ok(peers) = serde_json::from_str::<Vec<PeerConfig>>(resp_text) {
+            return Ok(peers);
+        }
+        
+        // 如果失败，尝试解析为字符串数组（URL列表）
+        if let Ok(urls) = serde_json::from_str::<Vec<String>>(resp_text) {
+            // 验证每个URL是否有效
+            let mut peers = Vec::new();
+            for url_str in urls {
+                let uri = url_str.parse().with_context(|| format!("Invalid URL in peer list: {}", url_str))?;
+                peers.push(PeerConfig { uri });
+            }
+            return Ok(peers);
+        }
+        
+        // 如果还失败，尝试解析为单个字符串（单个URL）
+        if let Ok(url_str) = serde_json::from_str::<String>(resp_text) {
+            let uri = url_str.parse().with_context(|| format!("Invalid URL: {}", url_str))?;
+            return Ok(vec![PeerConfig { uri }]);
+        }
+        
+        // 所有解析都失败了
+        Err(anyhow::anyhow!("Failed to parse peer list from remote server response: {}", resp_text))
     }
 
     pub fn new_from_config(config: &TomlConfigLoader) -> Result<Self, anyhow::Error> {
