@@ -355,7 +355,10 @@ impl Instance {
                 let conn_manager = instance.conn_manager.clone();
                 async move {
                     // 先添加远程服务器URL
-                    if let Err(e) = conn_manager.add_remote_server_url(remote_server_url.clone(), dead_url.clone()).await {
+                    if let Err(e) = conn_manager
+                        .add_remote_server_url(remote_server_url.clone(), dead_url.clone())
+                        .await
+                    {
                         tracing::warn!("Failed to add remote server URL: {}", e);
                     }
                     // 然后添加dead_url到连接器中，以便触发定期检查

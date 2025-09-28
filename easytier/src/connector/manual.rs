@@ -283,7 +283,7 @@ impl ManualConnectorManager {
                             tracing::info!("Skipping reconnect for remote server URL: {}", dead_url);
                             continue;
                         }
-                        
+
                         let data_clone = data.clone();
                         let sender = reconn_result_send.clone();
                         data.connectors.remove(&dead_url);
@@ -353,11 +353,12 @@ impl ManualConnectorManager {
             let dead_url = entry.value();
 
             // 检查是否需要更新（例如超过5分钟未更新）
-            let should_update = if let Some(last_update) = data.last_remote_update.get(remote_server_url) {
-                last_update.elapsed() > Duration::from_secs(300) // 5分钟
-            } else {
-                true
-            };
+            let should_update =
+                if let Some(last_update) = data.last_remote_update.get(remote_server_url) {
+                    last_update.elapsed() > Duration::from_secs(300) // 5分钟
+                } else {
+                    true
+                };
 
             if should_update {
                 to_update.push((remote_server_url.clone(), dead_url.clone()));
@@ -366,17 +367,26 @@ impl ManualConnectorManager {
 
         // 更新需要更新的远程服务器配置
         for (remote_server_url, dead_url) in to_update {
-            tracing::info!("Checking for updates from remote server: {}", remote_server_url);
+            tracing::info!(
+                "Checking for updates from remote server: {}",
+                remote_server_url
+            );
 
             match Self::fetch_peers_from_remote_server(&remote_server_url).await {
                 Ok(new_peer_urls) => {
-                    tracing::info!("Successfully fetched {} peers from remote server", new_peer_urls.len());
+                    tracing::info!(
+                        "Successfully fetched {} peers from remote server",
+                        new_peer_urls.len()
+                    );
 
                     // 更新时间戳
-                    data.last_remote_update.insert(remote_server_url.clone(), Instant::now());
+                    data.last_remote_update
+                        .insert(remote_server_url.clone(), Instant::now());
 
                     // 检查是否有变化
-                    let current_peers: BTreeSet<String> = data.connectors.iter()
+                    let current_peers: BTreeSet<String> = data
+                        .connectors
+                        .iter()
                         .map(|x| x.key().clone())
                         .filter(|url| url.starts_with(&dead_url)) // 只检查与当前dead_url相关的peers
                         .collect();
@@ -387,7 +397,9 @@ impl ManualConnectorManager {
                         tracing::info!("Remote server peers configuration changed, updating...");
 
                         // 移除旧的peers（与dead_url相关的）
-                        let to_remove: Vec<String> = data.connectors.iter()
+                        let to_remove: Vec<String> = data
+                            .connectors
+                            .iter()
                             .map(|x| x.key().clone())
                             .filter(|url| url.starts_with(&dead_url))
                             .collect();
@@ -412,16 +424,27 @@ impl ManualConnectorManager {
                             tracing::info!("Added new peer from remote server: {}", peer_url);
                         }
 
-                        tracing::info!("Updated peers from remote server. Old: {:?}, New: {:?}", current_peers, new_peers);
+                        tracing::info!(
+                            "Updated peers from remote server. Old: {:?}, New: {:?}",
+                            current_peers,
+                            new_peers
+                        );
 
                         // 强制触发一次重连检查，确保新配置生效
-                        data.global_ctx.issue_event(GlobalCtxEvent::Connecting(url::Url::parse(&dead_url).unwrap_or_else(|_| "invalid://url".parse().unwrap())));
+                        data.global_ctx.issue_event(GlobalCtxEvent::Connecting(
+                            url::Url::parse(&dead_url)
+                                .unwrap_or_else(|_| "invalid://url".parse().unwrap()),
+                        ));
                     } else {
                         tracing::info!("No changes in remote server peers configuration");
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to fetch peers from remote server {}: {:?}", remote_server_url, e);
+                    tracing::warn!(
+                        "Failed to fetch peers from remote server {}: {:?}",
+                        remote_server_url,
+                        e
+                    );
                 }
             }
         }
@@ -479,9 +502,10 @@ impl ManualConnectorManager {
         let mut ret = BTreeSet::new();
         for url in all_urls.iter() {
             // 不要将远程服务器URL标记为dead
-            let is_remote_server_url = data.remote_server_urls.iter().any(|entry| {
-                *entry.value() == *url
-            });
+            let is_remote_server_url = data
+                .remote_server_urls
+                .iter()
+                .any(|entry| *entry.value() == *url);
 
             if is_remote_server_url {
                 continue;
@@ -500,41 +524,39 @@ impl ManualConnectorManager {
         let parts: Vec<&str> = remote_server_url.splitn(2, ':').collect();
         if parts.len() != 2 {
             return Err(Error::AnyhowError(anyhow::anyhow!(
-                "Invalid remote server url format: {}, expected format: method:url", 
+                "Invalid remote server url format: {}, expected format: method:url",
                 remote_server_url
             )));
         }
 
         let method = parts[0].to_uppercase(); // 转换为大写，确保方法名正确
         let url = parts[1];
-        
+
         // 发起HTTP请求获取peers列表
         let client = reqwest::Client::new();
         let request_builder = client.request(
-            method.parse().map_err(|_| Error::AnyhowError(anyhow::anyhow!(
-                "Invalid HTTP method: {}", method
-            )))?,
+            method.parse().map_err(|_| {
+                Error::AnyhowError(anyhow::anyhow!("Invalid HTTP method: {}", method))
+            })?,
             url,
         );
 
-        let response = request_builder
-            .send()
-            .await
-            .map_err(|e| Error::AnyhowError(anyhow::anyhow!(
+        let response = request_builder.send().await.map_err(|e| {
+            Error::AnyhowError(anyhow::anyhow!(
                 "Failed to request remote server {}: {}",
                 remote_server_url,
                 e
-            )))?;
+            ))
+        })?;
 
         let status = response.status();
-        let resp_text = response
-            .text()
-            .await
-            .map_err(|e| Error::AnyhowError(anyhow::anyhow!(
+        let resp_text = response.text().await.map_err(|e| {
+            Error::AnyhowError(anyhow::anyhow!(
                 "Failed to read response from remote server {}: {}",
                 remote_server_url,
                 e
-            )))?;
+            ))
+        })?;
 
         // 检查HTTP状态码
         if !status.is_success() {
@@ -549,7 +571,9 @@ impl ManualConnectorManager {
 
         // 尝试解析JSON响应
         // 首先尝试解析为PeerConfig数组
-        if let Ok(peers) = serde_json::from_str::<Vec<crate::common::config::PeerConfig>>(&resp_text) {
+        if let Ok(peers) =
+            serde_json::from_str::<Vec<crate::common::config::PeerConfig>>(&resp_text)
+        {
             let peer_urls: Vec<String> = peers.into_iter().map(|p| p.uri.to_string()).collect();
             return Ok(peer_urls);
         }
@@ -558,25 +582,29 @@ impl ManualConnectorManager {
         if let Ok(urls) = serde_json::from_str::<Vec<String>>(&resp_text) {
             // 验证每个URL是否有效
             for url_str in &urls {
-                url::Url::parse(url_str).map_err(|e| Error::AnyhowError(anyhow::anyhow!(
-                    "Invalid URL in peer list: {}: {}", url_str, e
-                )))?;
+                url::Url::parse(url_str).map_err(|e| {
+                    Error::AnyhowError(anyhow::anyhow!(
+                        "Invalid URL in peer list: {}: {}",
+                        url_str,
+                        e
+                    ))
+                })?;
             }
             return Ok(urls);
         }
 
         // 如果还失败，尝试解析为单个字符串（单个URL）
         if let Ok(url_str) = serde_json::from_str::<String>(&resp_text) {
-            url::Url::parse(&url_str).map_err(|e| Error::AnyhowError(anyhow::anyhow!(
-                "Invalid URL: {}: {}", url_str, e
-            )))?;
+            url::Url::parse(&url_str).map_err(|e| {
+                Error::AnyhowError(anyhow::anyhow!("Invalid URL: {}: {}", url_str, e))
+            })?;
             return Ok(vec![url_str]);
         }
 
         // 所有解析都失败了
         Err(Error::AnyhowError(anyhow::anyhow!(
-            "Failed to parse peer list from remote server {}. Response: {}", 
-            remote_server_url, 
+            "Failed to parse peer list from remote server {}. Response: {}",
+            remote_server_url,
             resp_text
         )))
     }
@@ -615,10 +643,16 @@ impl ManualConnectorManager {
 
         // 检查是否是远程服务器URL，如果是则从远程服务器获取新的peers
         if let Some(remote_server_url) = data.remote_server_urls.get(&dead_url) {
-            tracing::info!("Fetching new peers from remote server: {}", remote_server_url.value());
+            tracing::info!(
+                "Fetching new peers from remote server: {}",
+                remote_server_url.value()
+            );
             match Self::fetch_peers_from_remote_server(remote_server_url.value()).await {
                 Ok(peer_urls) => {
-                    tracing::info!("Successfully fetched {} peers from remote server", peer_urls.len());
+                    tracing::info!(
+                        "Successfully fetched {} peers from remote server",
+                        peer_urls.len()
+                    );
 
                     // 移除旧的连接器
                     data.connectors.remove(&dead_url);
@@ -636,7 +670,8 @@ impl ManualConnectorManager {
                     }
 
                     // 更新时间戳
-                    data.last_remote_update.insert(remote_server_url.key().clone(), Instant::now());
+                    data.last_remote_update
+                        .insert(remote_server_url.key().clone(), Instant::now());
 
                     // 对于远程服务器URL更新，我们返回Ok表示处理成功
                     // 这样可以避免在日志中出现不必要的错误信息
@@ -644,7 +679,11 @@ impl ManualConnectorManager {
                     return Ok(ReconnResult::remote_server_update(dead_url));
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to fetch peers from remote server {}: {:?}", remote_server_url.value(), e);
+                    tracing::warn!(
+                        "Failed to fetch peers from remote server {}: {:?}",
+                        remote_server_url.value(),
+                        e
+                    );
                     // 继续使用原始URL尝试连接
                 }
             }
