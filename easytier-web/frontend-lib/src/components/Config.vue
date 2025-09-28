@@ -233,8 +233,6 @@ const portForwardProtocolOptions = ref(["tcp","udp"]);
                     <AutoComplete v-if="curNetwork.networking_method === NetworkingMethod.RemoteServer"
                       v-model="curNetwork.remote_server_url"
                       class="grow" dropdown :complete-on-focus="false" />
-                      v-model="curNetwork.public_server_url" :suggestions="publicServerSuggestions" class="grow"
-                      dropdown :complete-on-focus="false" @complete="searchPresetPublicServers" />
                   </div>
                 </div>
               </div>
