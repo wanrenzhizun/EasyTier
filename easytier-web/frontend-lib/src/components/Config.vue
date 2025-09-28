@@ -228,12 +228,13 @@ const portForwardProtocolOptions = ref(["tcp","udp"]);
                       class="grow" multiple fluid :suggestions="peerSuggestions" @complete="searchPeerSuggestions" />
 
                     <AutoComplete v-if="curNetwork.networking_method === NetworkingMethod.PublicServer"
-                      v-model="curNetwork.public_server_url" :suggestions="publicServerSuggestions"
-                      class="grow" dropdown :complete-on-focus="false"
-                      @complete="searchPresetPublicServers" />
+                      v-model="curNetwork.public_server_url" :suggestions="publicServerSuggestions" class="grow"
+                      dropdown :complete-on-focus="false" @complete="searchPresetPublicServers" />
                     <AutoComplete v-if="curNetwork.networking_method === NetworkingMethod.RemoteServer"
-                      v-model="curNetwork.remote_server_url" 
+                      v-model="curNetwork.remote_server_url"
                       class="grow" dropdown :complete-on-focus="false" />
+                      v-model="curNetwork.public_server_url" :suggestions="publicServerSuggestions" class="grow"
+                      dropdown :complete-on-focus="false" @complete="searchPresetPublicServers" />
                   </div>
                 </div>
               </div>
